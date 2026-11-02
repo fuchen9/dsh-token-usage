@@ -2,7 +2,7 @@
 // the plugin's own ledger (via a fake fiber context that implements the two
 // services it injects), then exercises the HTTP route through a real server.
 import { createServer } from "node:http";
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { zstdDecompressSync } from "node:zlib";
 import { apply, inject, ROUTE_PATH, RANGES, rangeStart, dayKey, routeOf, usageCounters } from "../lib/index.js";
@@ -210,6 +210,17 @@ if (first.body.totals.requests !== rawCount) throw new Error(`request count ${fi
 if (first.body.totals.total !== rawTotal) throw new Error(`total ${first.body.totals.total} != raw ${rawTotal}`);
 if (first.body.totals.sessions !== rawSessions.size) throw new Error(`session count ${first.body.totals.sessions} != sessions with usage ${rawSessions.size}`);
 
+// Optional: dump the full lifetime snapshot as JSON. `scripts/make-screenshot.mjs
+// --snapshot <path>` consumes it, which is how the README shot is rendered from
+// the current source even when the running Harness predates the edit.
+{
+	const index = process.argv.indexOf("--snapshot");
+	if (index >= 0 && process.argv[index + 1] !== undefined) {
+		writeFileSync(process.argv[index + 1], JSON.stringify(first.body, null, 2));
+		console.log("snapshot written:", process.argv[index + 1]);
+	}
+}
+
 // Every range must reproduce its own raw window exactly — cards, model table,
 // session count and the daily series alike. A range filter that only relabels a
 // lifetime total is precisely the bug this check exists to catch.
@@ -257,6 +268,28 @@ console.log("range switch re-opened logs:", opened - opensBeforeRanges);
 
 console.log("agents:", JSON.stringify(first.body.agents.map((a) => [a.kind, a.total, a.sessions])));
 console.log("presets:", JSON.stringify(first.body.presets.map((p) => [p.preset, p.total, p.sessions])));
+{
+	// The presets rows used to be raw Map values: `models` reached the wire as a
+	// Set (JSON {}) and the session-kind split did not exist. Pin the wire shape
+	// here so a regression fails in CI instead of rendering blank on screen.
+	const rows = first.body.presets;
+	if (!Array.isArray(rows) || rows.length === 0) throw new Error("presets must be a non-empty array");
+	for (const row of rows) {
+		if (typeof row.preset !== "string" || row.preset === "") throw new Error(`preset name missing: ${JSON.stringify(row.preset)}`);
+		if (!Number.isInteger(row.models) || row.models < 1) throw new Error(`preset ${row.preset} models is not a count: ${row.models}`);
+		if (!Number.isInteger(row.sessions) || row.sessions < 1) throw new Error(`preset ${row.preset} sessions is not a count: ${row.sessions}`);
+		if (!Number.isInteger(row.user) || row.user < 0) throw new Error(`preset ${row.preset} user is not a count: ${row.user}`);
+		if (!Number.isInteger(row.subagent) || row.subagent < 0) throw new Error(`preset ${row.preset} subagent is not a count: ${row.subagent}`);
+		if (row.user + row.subagent !== row.sessions) throw new Error(`preset ${row.preset} kinds ${row.user}+${row.subagent} != sessions ${row.sessions}`);
+		if (!(row.share >= 0 && row.share <= 1)) throw new Error(`preset ${row.preset} share out of range: ${row.share}`);
+	}
+	const kindSum = rows.reduce((sum, row) => sum + row.sessions, 0);
+	if (kindSum !== first.body.totals.sessions) throw new Error(`preset sessions ${kindSum} != totals.sessions ${first.body.totals.sessions}`);
+	for (let index = 1; index < rows.length; index += 1) {
+		if (rows[index - 1].total < rows[index].total) throw new Error(`presets not sorted by total at index ${index}`);
+	}
+	console.log(`preset rows: ${rows.length} rows, kinds add up (${kindSum} sessions), models: ${rows.map((r) => r.preset + "=" + r.models).join(" ")}`);
+}
 console.log("models:", first.body.models.length, "providers:", first.body.providers.length, "daily:", first.body.daily.length, "sessions:", first.body.sessions.length);
 console.log();
 console.log("model".padEnd(34) + "provider".padEnd(24) + "req".padStart(6) + "total".padStart(16) + "share".padStart(8) + "sessions".padStart(9));

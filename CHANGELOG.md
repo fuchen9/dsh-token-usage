@@ -1,5 +1,24 @@
 # 更新日志
 
+## 0.1.1 — 2026-11-02
+
+**新增**
+
+- 「按预设」面板：按会话的 `agentPreset`（`standard` / `maoying-write` …）汇总用量、会话数与模型数，条长按最大项归一。数据一直由 Host 算好，此前页面没有展示。
+- `scripts/make-screenshot.mjs`：用真实面板组件 + 出货样式 + 真实用量数据渲染 README 截图（需要本机有 Edge/Chrome）。
+- `scripts/harness-host.mjs --snapshot <path>`：把当前代码算出的完整快照落成 JSON，供截图脚本使用，这样即使运行中的 Harness 还是旧代码也能出图。
+
+**修复**
+
+- 「最近使用」列在按模型表里一直是「—」：模型行没有 `end` 字段（那是会话行的字段），改用 `row.last`。
+- 按会话类型 / 按预设 / 占比条渲染成一条看不见的细线：这几处条形是 `<span>`，而 `height` / `width` 对行内元素不生效，补 `display:block`。
+- 按会话类型 / 按预设的条改用 `--dsw-alias-brand-primary`，与模型表的占比条统一。
+
+**自检**
+
+- `harness-host.mjs` 新增 presets 线形断言：`models`/`user`/`subagent` 必须是整数、各预设会话数之和等于 `totals.sessions`、按合计降序。
+- `harness-dom.mjs` 新增「按预设」面板渲染断言（此前该面板在 wire 上是 `{}`，因为 `models` 是个 Set）。
+
 ## 0.1.0 — 2026-11-02
 
 首个公开版本。

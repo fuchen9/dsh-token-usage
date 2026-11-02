@@ -43,6 +43,7 @@
   "models.title": "按模型",
   "models.count": "{count} 个模型",
   "providers.title": "按提供商",
+  "presets.title": "按预设",
   "agents.title": "按会话类型",
   "agents.user": "主会话",
   "agents.subagent": "子会话",

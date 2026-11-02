@@ -10,16 +10,14 @@ Once installed, a **Token usage** entry appears in the sidebar panel list. Open 
 
 - **How much was spent in total**: total / input / cache read / output / requests / sessions
 - **Which model spent it**: requests, input, cache read, output, total, share bar and last-used time for every `provider + model`
-- **Where it went**: main sessions vs subagent sessions, and a per-provider breakdown
+- **Where it went**: main sessions vs subagent sessions, per agent preset, and a per-provider breakdown
 - **When it was spent**: all / last 30 days / last 7 days / today, plus recent-days and recent-sessions rankings
 
 Everything is **offline**: the data comes from local session logs only. No network requests, nothing reported anywhere.
 
-<!-- To add a screenshot: save it as docs/screenshot.png, then delete the comment markers below
+<!-- Rendered by `node scripts/make-screenshot.mjs`: real panel component, shipping CSS, real usage data -->
 
 ![panel screenshot](docs/screenshot.png)
-
--->
 
 ## Contents
 
@@ -53,6 +51,7 @@ Everything is **offline**: the data comes from local session logs only. No netwo
 | Summary cards | total (large value + exact value), input, cache read, output, requests (with session count as a hint) |
 | By model | model (provider + name) / requests / input / cache read / output / total / share bar / last used, sorted by total |
 | By session type | main sessions vs subagent sessions (`origin: subagent`) |
+| By preset | usage, session count and model count per agent preset (`standard`, `maoying-write`, …); bars are scaled to the largest preset |
 | By provider | total and share per provider |
 | Recent days | per-day totals (local calendar day), up to 30 days |
 | Recent sessions | title, type, preset, total, updated time; 8 rows by default, "expand" shows all |

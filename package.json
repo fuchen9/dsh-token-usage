@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-token-usage",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "description": "Token usage ledger for DeepSeek Harness: total tokens and per-model breakdown across every stored session.",
@@ -19,7 +19,12 @@
     "lib/locale/zh.json",
     "cordis.patch.yml",
     "icon.svg",
-    "README.md"
+    "README.md",
+    "README.en.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "docs/screenshot.png",
+    "docs/share.md"
   ],
   "dsh": {
     "bundle": {

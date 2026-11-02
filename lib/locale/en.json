@@ -43,6 +43,7 @@
   "models.title": "By model",
   "models.count": "{count} models",
   "providers.title": "By provider",
+  "presets.title": "By preset",
   "agents.title": "By session kind",
   "agents.user": "Main sessions",
   "agents.subagent": "Subagent sessions",

@@ -32,7 +32,10 @@ const snapshot = {
 		{ kind: "user", models: 5, sessions: 29, requests: 29, input: 1, output: 1, cacheRead: 1, cacheWrite: 0, reasoning: 0, total: 997276076, share: 0.7237 },
 		{ kind: "subagent", models: 12, sessions: 173, requests: 173, input: 1, output: 1, cacheRead: 1, cacheWrite: 0, reasoning: 0, total: 380742064, share: 0.2763 },
 	],
-	presets: [{ preset: "standard", sessions: 30, total: 999395644, share: 0.7 }],
+	presets: [
+		{ preset: "standard", sessions: 30, user: 12, subagent: 18, models: 4, total: 999395644, share: 0.7 },
+		{ preset: "maoying-write", sessions: 51, user: 0, subagent: 51, models: 3, total: 205648426, share: 0.1441 },
+	],
 	daily: [
 		{ day: "2026-11-01", tokens: 853574644 },
 		{ day: "2026-10-31", tokens: 67707716 },
@@ -59,7 +62,7 @@ const snapshot7d = {
 		{ provider: "magpie", models: 2, sessions: 120, requests: 4300, input: 22000000, output: 5100000, cacheRead: 760000000, cacheWrite: 0, reasoning: 0, total: 786000000, share: 0.6244 },
 	],
 	agents: [{ kind: "user", models: 2, sessions: 28, requests: 28, input: 1, output: 1, cacheRead: 1, cacheWrite: 0, reasoning: 0, total: 900000000, share: 0.715 }],
-	presets: [{ preset: "standard", sessions: 29, total: 880000000, share: 0.6991 }],
+	presets: [{ preset: "standard", sessions: 29, user: 11, subagent: 18, models: 4, total: 880000000, share: 0.6991 }],
 	daily: [
 		{ day: "2026-11-01", tokens: 853574644 },
 		{ day: "2026-10-31", tokens: 67707716 },
@@ -145,6 +148,10 @@ const expectations = [
 	["按提供商", "providers panel"],
 	["magpie", "provider row"],
 	["按会话类型", "agents panel"],
+	["按预设", "presets panel"],
+	["maoying-write", "preset row"],
+	["206M · 51", "preset total/sessions"],
+
 	["主会话", "user kind"],
 	["子会话", "subagent kind"],
 	// the agents panel once rendered "0 · 0" because the client indexed the
