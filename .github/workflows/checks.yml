@@ -1,0 +1,42 @@
+name: checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  offline-checks:
+    name: offline checks (node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["22", "24"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      # scratch-only dependencies for the jsdom render harness; never part of the package
+      - name: install scratch dependencies
+        run: npm install --prefix .verify --no-save --no-package-lock --no-audit --no-fund jsdom react react-dom
+
+      - name: pure-function checks
+        run: node scripts/check-helpers.mjs
+
+      - name: render checks (jsdom)
+        run: node scripts/harness-dom.mjs
+
+      # harness-host.mjs needs a real ~/.dsh/sessions directory, and
+      # harness-layout.mjs needs a Chromium binary, so both stay local-only.

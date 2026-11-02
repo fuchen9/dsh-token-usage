@@ -1,0 +1,6 @@
+# dsh-token-usage — Token 用量统计插件。
+# Host 半扫描 session 事件日志（assistant/message 的 usage），注册 GET /api/dsh-token-usage；
+# 包声明 dsh.client 提供侧边栏入口与主区域统计页面。
+- insert:
+    - id: token-usage
+      name: '@local/dsh-token-usage'

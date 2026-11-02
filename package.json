@@ -1,0 +1,51 @@
+{
+  "name": "@local/dsh-token-usage",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Token usage ledger for DeepSeek Harness: total tokens and per-model breakdown across every stored session.",
+  "main": "lib/index.js",
+  "icon": "./icon.svg",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./locale/*.json": "./lib/locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/client.js",
+    "lib/locale/en.json",
+    "lib/locale/zh.json",
+    "cordis.patch.yml",
+    "icon.svg",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true
+    }
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "plugin",
+    "token",
+    "usage",
+    "statistics"
+  ],
+  "license": "MIT",
+  "author": "fuchen9",
+  "homepage": "https://github.com/fuchen9/dsh-token-usage#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fuchen9/dsh-token-usage.git"
+  },
+  "bugs": {
+    "url": "https://github.com/fuchen9/dsh-token-usage/issues"
+  }
+}

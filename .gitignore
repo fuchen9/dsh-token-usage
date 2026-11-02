@@ -1,0 +1,12 @@
+# 本地自检的临时目录（jsdom / react / 无头浏览器探针），不进仓库
+.verify/
+
+# 打包产物（分享包从这里生成，用 GitHub Releases 分发）
+dist/
+
+node_modules/
+
+# 编辑器 / 系统噪音
+.DS_Store
+Thumbs.db
+*.log
