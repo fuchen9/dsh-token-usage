@@ -1,7 +1,10 @@
 // Pure-function checks for the host half. Every row asserts instead of merely
 // printing, so a regression fails the run instead of needing a human to compare
 // numbers by eye.
-import { routeOf, usageCounters, hostNameOf, isTrustedRequest, RANGES, rangeStart, startOfDay, dayKey } from "../lib/index.js";
+import { routeOf, usageCounters, hostNameOf, isTrustedRequest, RANGES, rangeStart, startOfDay, dayKey, encodeLedgerCache, decodeLedgerCache, UsageLedger } from "../lib/index.js";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 let checked = 0;
 const show = (value) => (value === undefined ? "undefined" : JSON.stringify(value).split("\\u0000").join("|NUL|"));
@@ -111,5 +114,123 @@ check("startOfDay clock", [midnight.getHours(), midnight.getMinutes(), midnight.
 
 // A day key is a plain YYYY-MM-DD string, so the window test is a string compare.
 check("day keys compare lexically", "2026-10-27" <= "2026-11-02" && "2026-10-26" < "2026-10-27", true);
+
+// --- ledger cache codec --------------------------------------------------
+// The on-disk cache must survive a save/load round trip unchanged and must
+// drop doubtful data instead of trusting it — a half-written file may never
+// inject wrong numbers into the panel.
+const countersBag = { requests: 2, input: 10, output: 20, cacheRead: 0, cacheWrite: 0, reasoning: 0, total: 30, provider: "p", model: "m" };
+const rawCacheFile = {
+	version: 1,
+	savedAt: "2026-11-02T00:00:00.000Z",
+	entries: {
+		"s-1": {
+			revision: "42",
+			cursor: 3,
+			truncated: true,
+			start: 1000,
+			end: 2000,
+			header: { cwd: "D:/x", id: "s-1", origin: "cli", agentPreset: "writer" },
+			routes: [["p\u0000m", countersBag]],
+			byDay: [["2026-11-01", { routes: [["p\u0000m", countersBag]], min: 1000, max: 2000, tokens: 30 }]],
+		},
+	},
+};
+const decoded = decodeLedgerCache(rawCacheFile);
+check("codec decodes one entry", decoded.size, 1);
+const decodedEntry = decoded.get("s-1");
+check("codec keeps the fold", [decodedEntry.cursor, decodedEntry.truncated, decodedEntry.routes.size, decodedEntry.byDay.size], [3, true, 1, 1]);
+check("codec keeps counters", decodedEntry.routes.get("p\u0000m").input, 10);
+check("codec keeps the header", decodedEntry.header, { cwd: "D:/x", id: "s-1", origin: "cli", agentPreset: "writer" });
+const encodedOnce = encodeLedgerCache(decoded);
+check("codec round trip is stable", encodeLedgerCache(decodeLedgerCache({ version: 1, entries: encodedOnce })), encodedOnce);
+check("codec drops null", decodeLedgerCache(null).size, 0);
+check("codec drops missing entries", decodeLedgerCache({}).size, 0);
+check(
+	"codec drops doubtful entries",
+	decodeLedgerCache({
+		entries: {
+			a: null,
+			b: { revision: "1" },
+			c: { revision: "1", cursor: "x", routes: [], byDay: [] },
+			d: { revision: "1", cursor: 1, routes: [["k", { input: "x" }]], byDay: [] },
+			e: { revision: "1", cursor: 1, routes: [], byDay: [["2026-11-01", { routes: [], min: 1, max: "x", tokens: 1 }]] },
+		},
+	}).size,
+	0,
+);
+
+// --- live incremental fold ----------------------------------------------
+// A live session folds onto the entry the previous process left behind
+// instead of being re-folded from zero, so the head must not double count.
+const liveLedger = new UsageLedger({ logger: { warn() {} } });
+const liveEvent = (seq, input) => ({
+	seq,
+	type: "assistant/message",
+	time: 1_700_000_000_000 + seq * 1_000,
+	data: { message: { source: { provider: "p", model: "m" } }, usage: { inputTokens: input, outputTokens: input } },
+});
+const liveSession = (seq, events) => ({ header: { cwd: "D:/x" }, seq, snapshotEvents: () => events });
+
+liveLedger.collectLive("live-1", liveSession(1, [liveEvent(0, 100)]));
+const liveEntry = liveLedger.entries.get("live-1");
+check("live first fold", [liveEntry.cursor, liveEntry.revision, liveEntry.routes.get("p\u0000m").requests], [1, "live:1", 1]);
+
+// The same head plus a new tail must count the head exactly once.
+liveLedger.collectLive("live-1", liveSession(2, [liveEvent(0, 100), liveEvent(1, 50)]));
+check("live tail only", liveEntry.routes.get("p\u0000m").input, 150);
+check("live cursor advanced", [liveEntry.cursor, liveEntry.revision], [2, "live:2"]);
+
+// An unchanged session is a no-op even when the snapshot is handed over again.
+liveLedger.collectLive("live-1", liveSession(2, [liveEvent(0, 100), liveEvent(1, 50)]));
+check("live same revision no-op", liveEntry.routes.get("p\u0000m").output, 150);
+
+// A broken history cannot silently extend a fold it does not match.
+liveLedger.collectLive("live-1", liveSession(6, [liveEvent(5, 7)]));
+const rebuilt = liveLedger.entries.get("live-1");
+check("live discontinuity rebuilds", [rebuilt.cursor, rebuilt.routes.get("p\u0000m").input], [6, 7]);
+
+// --- cache file round trip ----------------------------------------------
+const cacheDir = mkdtempSync(join(tmpdir(), "dsh-token-usage-check-"));
+process.env.DSH_TOKEN_USAGE_CACHE = join(cacheDir, "cache.json");
+try {
+	const saver = new UsageLedger({ logger: { warn() {} } });
+	saver.entries.set("s-1", decodedEntry);
+	saver.dirty = true;
+	saver.saveCacheNow();
+	const loader = new UsageLedger({ logger: { warn() {} } });
+	loader.loadCache();
+	check("cache file round trip", [loader.loadedFromDisk, loader.entries.get("s-1")?.cursor], [true, 3]);
+	check("cache loader keeps counters", loader.entries.get("s-1").routes.get("p\u0000m").input, 10);
+
+	writeFileSync(process.env.DSH_TOKEN_USAGE_CACHE, JSON.stringify({ version: 999, entries: {} }));
+	const guarded = new UsageLedger({ logger: { warn() {} } });
+	guarded.loadCache();
+	check("cache version guard", guarded.loadedFromDisk, false);
+} finally {
+	rmSync(cacheDir, { recursive: true, force: true });
+}
+
+// --- stale serve ---------------------------------------------------------
+// A warm ledger answers from its cache immediately (marked stale) while the
+// rescan runs in the background; a cold ledger still waits for the scan.
+const fakeCtx = () => ({
+	sessionPersistence: { list: async () => [] },
+	sessions: { list: () => [] },
+	logger: { warn() {} },
+});
+
+const cold = new UsageLedger(fakeCtx());
+const coldBody = await cold.scan({ range: "all" });
+check("cold serve waits for the scan", [coldBody.ok, coldBody.stale], [true, false]);
+
+const serving = new UsageLedger(fakeCtx());
+serving.loadedFromDisk = true;
+serving.entries.set("s-1", decodedEntry);
+const staleBody = await serving.scan({ range: "all" });
+check("warm serve is stale", staleBody.stale, true);
+await serving.inflight;
+const freshBody = await serving.scan({ range: "all" });
+check("warm serve settles fresh", freshBody.stale, false);
 
 console.log(`\nALL ${checked} HELPER CHECKS PASSED`);

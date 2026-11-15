@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-token-usage",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "Token usage ledger for DeepSeek Harness: total tokens and per-model breakdown across every stored session.",

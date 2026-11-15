@@ -35,10 +35,11 @@ Everything is **offline**: the data comes from local session logs only. No netwo
 
 | | |
 | --- | --- |
-| Data source | Read-only access to `~/.dsh/sessions/**/session.v4.jsonl.zstd`; nothing is written, no session data is modified, no other plugin's DOM is touched |
+| Data source | Read-only access to `~/.dsh/sessions/**/session.v4.jsonl.zstd`; no session data is modified and no other plugin's DOM is touched. The plugin itself only writes a fold cache at `~/.dsh/dsh-token-usage-cache.json` |
 | Trustworthy numbers | Same definition as Harness' built-in `tokenUsage` projection, so the panel matches the usage pill inside an individual session |
 | Model grouping | `message.source.provider` + `message.source.model` are authoritative; a duplicated `provider/` prefix is stripped (only when it is actually compatible with the provider), so one model never splits into two rows |
-| Incremental scan | Each session's `revision` is checked: unchanged sessions reuse their previous ledger, changed ones only read the tail after the last `seq`. First full scan of 220+ sessions / 8700+ usage events takes ~1–2 s; every later request is a cache hit |
+| Opens instantly | Folds are cached on disk (version guard + per-field validation: doubtful data discards the whole file and triggers one full rescan), so after a DSH restart the panel shows the previous numbers right away and refreshes itself once the background rescan lands |
+| Incremental scan | Each session's `revision` is checked: unchanged sessions reuse their previous ledger, changed ones only read the tail after the last `seq`; live sessions only absorb the new events instead of refolding from zero. First full scan of 220+ sessions / 8700+ usage events takes ~1–2 s; every later request is a cache hit |
 | Time windows | The scan buckets by **local calendar day** (`YYYY-MM-DD`) right away, so switching between today / 7 days / 30 days only merges those buckets — no disk access |
 | Theme and language | Only `--dsw-alias-*` design tokens, so it follows the light/dark theme automatically; Chinese and English UI |
 | Dependencies | **Zero runtime dependencies** (`react` comes from the Harness frontend; no Harness Client package is required) |

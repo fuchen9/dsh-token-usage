@@ -2,10 +2,16 @@
 // the plugin's own ledger (via a fake fiber context that implements the two
 // services it injects), then exercises the HTTP route through a real server.
 import { createServer } from "node:http";
-import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { zstdDecompressSync } from "node:zlib";
 import { apply, inject, ROUTE_PATH, RANGES, rangeStart, dayKey, routeOf, usageCounters } from "../lib/index.js";
+
+// Keep the harness away from the real on-disk cache; it measures cold scans,
+// so the scratch file from a previous run must not warm it up.
+const scratchCache = join(process.env.USERPROFILE ?? process.env.HOME, ".dsh", "sessions-harness-cache.json");
+process.env.DSH_TOKEN_USAGE_CACHE = scratchCache;
+rmSync(scratchCache, { force: true });
 
 const SESSIONS_ROOT = join(process.env.USERPROFILE ?? process.env.HOME, ".dsh", "sessions");
 

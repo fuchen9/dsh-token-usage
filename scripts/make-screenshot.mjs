@@ -170,6 +170,8 @@ const renderPanel = async (snapshot) => {
 			inject: (_name, fn) => fn(),
 		},
 	};
+	// The screenshot must render the snapshot it was handed, not a warm cache.
+	process.env.DSH_TOKEN_USAGE_CACHE = join(tmpdir(), "dsh-token-usage-screenshot-cache.json");
 	moduleExports.apply(ctx);
 
 	const page = slots.find((slot) => slot.options.name === "main");
