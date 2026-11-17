@@ -18,6 +18,8 @@ const snapshot = {
 	ok: true,
 	generatedAt: Date.now(),
 	scanMs: 42,
+	scope: "unarchived",
+	deduped: { sessions: 17, tokens: 90123456 },
 	totals: { requests: 8342, input: 34631612, output: 8344986, cacheRead: 1335041542, cacheWrite: 0, reasoning: 0, total: 1378018140, sessions: 202, models: 3, truncatedSessions: 0 },
 	models: [
 		{ provider: "magpie", model: "codearts/deepseek-v4.1-flash", requests: 4700, input: 24800000, output: 5540000, cacheRead: 809000000, cacheWrite: 0, reasoning: 0, total: 839675114, sessions: 131, first: 1, last: 1793542003127, share: 0.6093 },
@@ -41,7 +43,7 @@ const snapshot = {
 		{ day: "2026-10-31", tokens: 67707716 },
 	],
 	sessions: [
-		{ id: "session-5883f1b2-20dc-490a-8131-ea2fcd7ccb11", label: "default-workspace", kind: "user", preset: "standard", requests: 136, tokens: 12568346, start: 1793541154094, end: 1793542003127 },
+		{ id: "session-5883f1b2-20dc-490a-8131-ea2fcd7ccb11", label: "default-workspace", kind: "user", preset: "standard", archived: false, requests: 136, tokens: 12568346, start: 1793541154094, end: 1793542003127 },
 	],
 };
 
@@ -52,6 +54,8 @@ const snapshot7d = {
 	ok: true,
 	generatedAt: Date.now(),
 	range: "7d",
+	scope: "unarchived",
+	deduped: { sessions: 12, tokens: 60123456 },
 	scanMs: 42,
 	totals: { requests: 7754, input: 33000000, output: 7900000, cacheRead: 1216000000, cacheWrite: 0, reasoning: 0, total: 1258822101, sessions: 198, models: 2, truncatedSessions: 0 },
 	models: [
@@ -68,7 +72,7 @@ const snapshot7d = {
 		{ day: "2026-10-31", tokens: 67707716 },
 	],
 	sessions: [
-		{ id: "session-5883f1b2-20dc-490a-8131-ea2fcd7ccb11", label: "default-workspace", kind: "user", preset: "standard", requests: 100, tokens: 10568346, start: 1793541154094, end: 1793542003127 },
+		{ id: "session-5883f1b2-20dc-490a-8131-ea2fcd7ccb11", label: "default-workspace", kind: "user", preset: "standard", archived: false, requests: 100, tokens: 10568346, start: 1793541154094, end: 1793542003127 },
 	],
 };
 
@@ -91,7 +95,13 @@ globalThis.fetch = async (url) => {
 	const mark = text.indexOf("?");
 	const params = new URLSearchParams(mark === -1 ? "" : text.slice(mark + 1));
 	const range = params.get("range") ?? "all";
-	return { ok: true, status: 200, json: async () => ({ ...(byRange.get(range) ?? snapshot), range }), url };
+	const scope = params.get("scope") ?? "all";
+	// The archive scope of the fake registry is empty: serve the empty body so
+	// the archived empty state can be asserted below.
+	if (scope === "archived") {
+		return { ok: true, status: 200, json: async () => ({ ...emptySnapshot, scope, deduped: { sessions: 0, tokens: 0 } }), url };
+	}
+	return { ok: true, status: 200, json: async () => ({ ...(byRange.get(range) ?? snapshot), range, scope }), url };
 };
 
 // Load the bundle exactly as the module table would.
@@ -165,6 +175,9 @@ const expectations = [
 	["standard", "session preset"],
 	["扫描耗时", "scan note"],
 	["输入不包含缓存读取", "cache note"],
+	["未归档", "scope seg (default)"],
+	["已归档", "archived scope seg"],
+	["同名会话只计用量最多的一个", "dedup notice"],
 ];
 let missing = 0;
 for (const [needle, label] of expectations) {
@@ -195,6 +208,54 @@ const rangeChecks = [
 	[afterRange.includes("codearts/deepseek-v4.1-flash"), "model table survives the range switch"],
 ];
 for (const [ok, label] of rangeChecks) {
+	if (!ok) missing += 1;
+	console.log((ok ? "OK   " : "MISS ") + label);
+}
+
+// Interaction: switch to the archived scope, then back to the default.
+// The range is still on 7d from the previous block, so reset to 全部 first —
+// the dedicated archived empty state only shows for the lifetime window.
+const allButton = [...window.document.querySelectorAll("button")].find((b) => b.textContent === "全部");
+if (allButton === undefined) throw new Error("range button missing");
+await React.act(async () => {
+	allButton.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+});
+await React.act(async () => {
+	await new Promise((resolve) => setTimeout(resolve, 50));
+});
+const scopeChecks = [
+	[fetchLog[0].includes("scope=unarchived"), "the first fetch defaults to scope=unarchived"],
+];
+const scopeButtons = [...window.document.querySelectorAll("button")];
+const archivedButton = scopeButtons.find((b) => b.textContent === "已归档");
+if (archivedButton === undefined) throw new Error("scope button missing");
+await React.act(async () => {
+	archivedButton.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+});
+await React.act(async () => {
+	await new Promise((resolve) => setTimeout(resolve, 50));
+});
+const afterScope = window.document.body.textContent ?? "";
+scopeChecks.push(
+	[fetchLog.some((u) => u.includes("scope=archived")), "the archived click refetches with scope=archived"],
+	[afterScope.includes("还没有已归档会话的用量。"), "the archived empty state shows"],
+	[!afterScope.includes("1,378,018,140"), "the unarchived totals left the archived view"],
+	[!afterScope.includes("同名会话只计用量最多的一个"), "the dedup notice left the archived view"],
+);
+const activeButton = [...window.document.querySelectorAll("button")].find((b) => b.textContent === "未归档");
+if (activeButton === undefined) throw new Error("scope button missing");
+await React.act(async () => {
+	activeButton.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+});
+await React.act(async () => {
+	await new Promise((resolve) => setTimeout(resolve, 50));
+});
+const restoredScope = window.document.body.textContent ?? "";
+scopeChecks.push(
+	[restoredScope.includes("1,378,018,140"), "switching back restores the unarchived totals"],
+	[restoredScope.includes("同名会话只计用量最多的一个"), "the dedup notice comes back with the data"],
+);
+for (const [ok, label] of scopeChecks) {
 	if (!ok) missing += 1;
 	console.log((ok ? "OK   " : "MISS ") + label);
 }

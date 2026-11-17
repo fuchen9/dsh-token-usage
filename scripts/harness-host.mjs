@@ -5,7 +5,7 @@ import { createServer } from "node:http";
 import { readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { zstdDecompressSync } from "node:zlib";
-import { apply, inject, ROUTE_PATH, RANGES, rangeStart, dayKey, routeOf, usageCounters } from "../lib/index.js";
+import { apply, inject, ROUTE_PATH, RANGES, rangeStart, dayKey, routeOf, usageCounters, sessionLabel } from "../lib/index.js";
 
 // Keep the harness away from the real on-disk cache; it measures cold scans,
 // so the scratch file from a previous run must not warm it up.
@@ -53,30 +53,19 @@ function loadSessions() {
 }
 
 const store = loadSessions();
-let rawTotal = 0;
-let rawCount = 0;
-const rawSessions = new Set();
-for (const entry of store.values()) {
-	for (const event of entry.events) {
-		if (event.type !== "assistant/message") continue;
-		const usage = event.data?.usage;
-		if (typeof usage?.totalTokens !== "number") continue;
-		rawTotal += Math.max(usage.totalTokens, (usage.inputTokens ?? 0) + (usage.cacheReadTokens ?? 0) + (usage.cacheWriteTokens ?? 0) + (usage.outputTokens ?? 0));
-		rawCount += 1;
-		rawSessions.add(entry.header.id);
-	}
-}
-console.log("raw session files:", store.size, "raw usage events:", rawCount, "raw totalTokens:", rawTotal.toLocaleString());
 
 // Independent per-range expectation: walk the same events and keep only those
 // whose own `time` falls inside the window. This never touches the ledger's
-// per-day buckets, so it tests the windowing instead of restating it.
+// per-day buckets, so it tests the windowing instead of restating it. The fold
+// is per session, so the same-name dedup rule can be applied on top afterwards.
 const NOW = Date.now();
 const rawRanges = new Map();
 for (const range of RANGES) {
-	rawRanges.set(range, { since: rangeStart(range, NOW), requests: 0, total: 0, sessions: new Set(), models: new Map(), days: new Map() });
+	rawRanges.set(range, { since: rangeStart(range, NOW), bySession: new Map() });
 }
+const headerOf = new Map();
 for (const entry of store.values()) {
+	headerOf.set(entry.header.id, entry.header);
 	for (const event of entry.events) {
 		if (event.type !== "assistant/message") continue;
 		const counters = usageCounters(event.data?.usage);
@@ -85,28 +74,78 @@ for (const entry of store.values()) {
 		const day = dayKey(event.time);
 		for (const [range, acc] of rawRanges) {
 			if (acc.since !== undefined && day < acc.since) continue;
-			acc.requests += 1;
-			acc.total += counters.total;
-			acc.sessions.add(entry.header.id);
-			let row = acc.models.get(route.key);
+			let session = acc.bySession.get(entry.header.id);
+			if (session === undefined) {
+				session = { requests: 0, total: 0, models: new Map(), days: new Map() };
+				acc.bySession.set(entry.header.id, session);
+			}
+			session.requests += 1;
+			session.total += counters.total;
+			let row = session.models.get(route.key);
 			if (row === undefined) {
 				row = { provider: route.provider, model: route.model, requests: 0, total: 0 };
-				acc.models.set(route.key, row);
+				session.models.set(route.key, row);
 			}
 			row.requests += 1;
 			row.total += counters.total;
-			acc.days.set(day, (acc.days.get(day) ?? 0) + counters.total);
+			session.days.set(day, (session.days.get(day) ?? 0) + counters.total);
 		}
 	}
 }
 const allRange = rawRanges.get("all");
-if (allRange.total !== rawTotal || allRange.requests !== rawCount) {
-	throw new Error(`the two raw folds disagree: ${allRange.total}/${allRange.requests} vs ${rawTotal}/${rawCount}`);
+let rawTotal = 0;
+let rawCount = 0;
+const rawSessions = new Set();
+for (const session of allRange.bySession.values()) {
+	rawTotal += session.total;
+	rawCount += session.requests;
 }
+for (const id of allRange.bySession.keys()) rawSessions.add(id);
+if (rawTotal !== 0 && rawCount === 0) throw new Error("raw fold is inconsistent");
+console.log("raw session files:", store.size, "raw usage events:", rawCount, "raw totalTokens:", rawTotal.toLocaleString());
 console.log(
 	"raw windows:",
-	RANGES.map((range) => `${range}=${rawRanges.get(range).total.toLocaleString()}/${rawRanges.get(range).sessions.size}s`).join("  "),
+	RANGES.map((range) => {
+		const acc = rawRanges.get(range);
+		let total = 0;
+		for (const session of acc.bySession.values()) total += session.total;
+		return `${range}=${total.toLocaleString()}/${acc.bySession.size}s`;
+	}).join("  "),
 );
+
+// Mirror the ledger's same-name dedup: group by sessionLabel, keep the biggest
+// total per label, and drop the rest from every projection — the expectations
+// below are what the route must reproduce exactly.
+const projectDedup = (acc) => {
+	const best = new Map();
+	for (const [id, session] of acc.bySession) {
+		const label = sessionLabel(headerOf.get(id));
+		const previous = best.get(label);
+		if (previous === undefined || session.total > previous.total) best.set(label, session);
+	}
+	const kept = new Set(best.values());
+	const out = { requests: 0, total: 0, sessions: kept.size, models: new Map(), days: new Map() };
+	for (const session of kept) {
+		out.requests += session.requests;
+		out.total += session.total;
+		for (const [key, row] of session.models) {
+			let target = out.models.get(key);
+			if (target === undefined) {
+				target = { provider: row.provider, model: row.model, requests: 0, total: 0 };
+				out.models.set(key, target);
+			}
+			target.requests += row.requests;
+			target.total += row.total;
+		}
+		for (const [day, tokens] of session.days) out.days.set(day, (out.days.get(day) ?? 0) + tokens);
+	}
+	return out;
+};
+const expected = new Map();
+for (const [range, acc] of rawRanges) expected.set(range, projectDedup(acc));
+const expectedAll = expected.get("all");
+const dedupDropped = rawSessions.size - expectedAll.sessions;
+console.log(`dedup: ${rawSessions.size} sessions with usage -> ${expectedAll.sessions} kept labels (${dedupDropped} dropped)`);
 
 let opened = 0;
 
@@ -155,6 +194,9 @@ const services = {
 	logger: { warn: (m) => console.log("[warn]", m), error: (m) => console.log("[error]", m) },
 	sessions: { list: () => liveSessions },
 	sessionPersistence: persistence,
+	// The archive set is normally the workspace registry's; the harness keeps it
+	// empty so every session counts as unarchived (the default view).
+	workspaceRegistry: { archivedSessionIds: [] },
 	webServer: {
 		host: "127.0.0.1",
 		register(route) {
@@ -212,9 +254,9 @@ console.log("totals:", JSON.stringify(first.body.totals));
 // The ledger must fold every usage event in the logs, whether the session came
 // back from persistence or only from memory. Anything less is a silent drop.
 if (first.body.ok !== true) throw new Error("first scan failed: " + JSON.stringify(first.body.error));
-if (first.body.totals.requests !== rawCount) throw new Error(`request count ${first.body.totals.requests} != raw ${rawCount}`);
-if (first.body.totals.total !== rawTotal) throw new Error(`total ${first.body.totals.total} != raw ${rawTotal}`);
-if (first.body.totals.sessions !== rawSessions.size) throw new Error(`session count ${first.body.totals.sessions} != sessions with usage ${rawSessions.size}`);
+if (first.body.totals.requests !== expectedAll.requests) throw new Error(`request count ${first.body.totals.requests} != dedup expectation ${expectedAll.requests}`);
+if (first.body.totals.total !== expectedAll.total) throw new Error(`total ${first.body.totals.total} != dedup expectation ${expectedAll.total}`);
+if (first.body.totals.sessions !== expectedAll.sessions) throw new Error(`session count ${first.body.totals.sessions} != kept labels ${expectedAll.sessions}`);
 
 // Optional: dump the full lifetime snapshot as JSON. `scripts/make-screenshot.mjs
 // --snapshot <path>` consumes it, which is how the README shot is rendered from
@@ -243,28 +285,30 @@ console.log();
 for (const range of RANGES) {
 	const acc = rawRanges.get(range);
 	const body = rangeBodies.get(range);
+	const want = expected.get(range);
 	if (body.range !== range) throw new Error(`asked for ${range}, got ${body.range}`);
-	if (body.totals.requests !== acc.requests) throw new Error(`[${range}] requests ${body.totals.requests} != raw ${acc.requests}`);
-	if (body.totals.total !== acc.total) throw new Error(`[${range}] total ${body.totals.total} != raw ${acc.total}`);
-	if (body.totals.sessions !== acc.sessions.size) throw new Error(`[${range}] sessions ${body.totals.sessions} != raw ${acc.sessions.size}`);
-	if (body.models.length !== acc.models.size) throw new Error(`[${range}] ${body.models.length} model rows, raw has ${acc.models.size}`);
+	if (body.scope !== "all") throw new Error(`default scope should be "all", got ${body.scope}`);
+	if (body.totals.requests !== want.requests) throw new Error(`[${range}] requests ${body.totals.requests} != dedup expectation ${want.requests}`);
+	if (body.totals.total !== want.total) throw new Error(`[${range}] total ${body.totals.total} != dedup expectation ${want.total}`);
+	if (body.totals.sessions !== want.sessions) throw new Error(`[${range}] sessions ${body.totals.sessions} != kept labels ${want.sessions}`);
+	if (body.models.length !== want.models.size) throw new Error(`[${range}] ${body.models.length} model rows, expectation has ${want.models.size}`);
 	for (const row of body.models) {
 		const key = `${row.provider}\u0000${row.model}`;
-		const expected = acc.models.get(key);
-		if (expected === undefined) throw new Error(`[${range}] model ${key} is not in the raw window`);
-		if (row.total !== expected.total) throw new Error(`[${range}] ${key} total ${row.total} != ${expected.total}`);
-		if (row.requests !== expected.requests) throw new Error(`[${range}] ${key} requests ${row.requests} != ${expected.requests}`);
+		const expectedRow = want.models.get(key);
+		if (expectedRow === undefined) throw new Error(`[${range}] model ${key} is not in the dedup expectation`);
+		if (row.total !== expectedRow.total) throw new Error(`[${range}] ${key} total ${row.total} != ${expectedRow.total}`);
+		if (row.requests !== expectedRow.requests) throw new Error(`[${range}] ${key} requests ${row.requests} != ${expectedRow.requests}`);
 	}
 	const gotDays = body.daily.map((row) => row.day);
-	const expectedDays = [...acc.days.keys()].sort().reverse().slice(0, 30);
+	const expectedDays = [...want.days.keys()].sort().reverse().slice(0, 30);
 	if (gotDays.join(",") !== expectedDays.join(",")) {
 		throw new Error(`[${range}] daily days differ: ${gotDays.join(",")} vs ${expectedDays.join(",")}`);
 	}
 	const parts = body.totals.input + body.totals.cacheRead + body.totals.cacheWrite + body.totals.output;
 	if (body.totals.total < parts) throw new Error(`[${range}] total ${body.totals.total} is below its own parts ${parts}`);
 	console.log(
-		`range ${range.padEnd(5)} since=${String(acc.since).padEnd(11)} requests=${String(acc.requests).padStart(5)}` +
-			` total=${acc.total.toLocaleString().padStart(16)} models=${String(acc.models.size).padStart(2)} days=${String(gotDays.length).padStart(2)}`,
+		`range ${range.padEnd(5)} since=${String(acc.since).padEnd(11)} requests=${String(want.requests).padStart(5)}` +
+			` total=${want.total.toLocaleString().padStart(16)} models=${String(want.models.size).padStart(2)} days=${String(gotDays.length).padStart(2)}`,
 	);
 }
 if (rangeBodies.get("today").totals.total >= rangeBodies.get("all").totals.total) throw new Error("today is not narrower than all time");

@@ -1,7 +1,7 @@
 // Pure-function checks for the host half. Every row asserts instead of merely
 // printing, so a regression fails the run instead of needing a human to compare
 // numbers by eye.
-import { routeOf, usageCounters, hostNameOf, isTrustedRequest, RANGES, rangeStart, startOfDay, dayKey, encodeLedgerCache, decodeLedgerCache, UsageLedger } from "../lib/index.js";
+import { routeOf, usageCounters, hostNameOf, isTrustedRequest, RANGES, SCOPES, rangeStart, startOfDay, dayKey, encodeLedgerCache, decodeLedgerCache, UsageLedger } from "../lib/index.js";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -232,5 +232,58 @@ check("warm serve is stale", staleBody.stale, true);
 await serving.inflight;
 const freshBody = await serving.scan({ range: "all" });
 check("warm serve settles fresh", freshBody.stale, false);
+
+// --- archive scope + same-name dedup --------------------------------------
+// The workspace registry's archive set slices every projection, and sessions
+// sharing a display label count once — the one with the most usage.
+check("scopes", SCOPES, ["unarchived", "archived", "all"]);
+
+const scopeBag = (total) => ({
+	provider: "p", model: "m",
+	requests: 1, input: total, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0, total,
+});
+const scopeEntry = (id, cwd, total) => ({
+	revision: "r",
+	cursor: 1,
+	truncated: false,
+	header: { cwd, id },
+	routes: [["p\\u0000m", scopeBag(total)]],
+	byDay: [["2026-11-01", { routes: [["p\\u0000m", scopeBag(total)]], min: 1000, max: 2000, tokens: total }]],
+});
+const scoped = new UsageLedger({
+	logger: { warn() {} },
+	workspaceRegistry: { archivedSessionIds: ["arch-big", "arch-other"] },
+});
+scoped.entries = decodeLedgerCache({
+	version: 1,
+	entries: {
+		"arch-big": scopeEntry("arch-big", "D:/小说", 100),
+		"live-dup": scopeEntry("live-dup", "D:/小说", 50),
+		"other": scopeEntry("other", "D:/插件开发", 30),
+		"arch-other": scopeEntry("arch-other", "D:/小说2", 70),
+	},
+});
+scoped.refreshArchived(); // direct snapshot calls bypass scan()'s registry refresh
+scoped.lastScanAt = Date.now(); // warm serve: the background scan must not wipe the fake folds
+
+const allScope = scoped.snapshot(undefined, "all");
+check("all scope keeps the biggest of each name", [allScope.totals.sessions, allScope.totals.total], [3, 200]);
+check("all scope reports what dedup dropped", allScope.deduped, { sessions: 1, tokens: 50 });
+check("all scope keeps the archived flag", allScope.sessions.find((row) => row.id === "arch-big")?.archived, true);
+check("all scope marks live rows unarchived", allScope.sessions.find((row) => row.id === "other")?.archived, false);
+
+const unarchived = scoped.snapshot(undefined, "unarchived");
+check("unarchived scope drops archived ids", [unarchived.totals.sessions, unarchived.totals.total], [2, 80]);
+check("unarchived scope dedups within itself", unarchived.deduped, { sessions: 0, tokens: 0 });
+
+const archived = scoped.snapshot(undefined, "archived");
+check("archived scope keeps only archived ids", [archived.totals.sessions, archived.totals.total], [2, 170]);
+
+const scopedView = scoped.view("all", "unarchived");
+check("view memo carries the scope", [scopedView.scope, scopedView.totals.total], ["unarchived", 80]);
+
+scoped.lastScanAt = Date.now(); // warm serve: the background scan must not wipe the fake folds
+const scopedServe = await scoped.scan({ range: "all", scope: "archived" });
+check("scan passes the scope through", [scopedServe.scope, scopedServe.totals.total], ["archived", 170]);
 
 console.log(`\nALL ${checked} HELPER CHECKS PASSED`);
